@@ -1,33 +1,5 @@
 import serial
 import time
-import struct
-
-# =============================
-# RS485 CONFIG
-# =============================
-PORT = "COM7"
-BAUD = 9600
-
-ser = serial.Serial(PORT, BAUD, timeout=1)
-
-# =============================
-# CONSTANTS (same as C)
-# =============================
-RS485_START_BYTE = 0xAA
-RS485_END_BYTE   = 0x55
-CELL_VOLTAGES_CMD = 0x01
-RS485_STATUS_OK   = 0x00
-
-# test data = one uint16 (2 bytes)
-cell_voltages_info = [0x0001]
-
-# correct data length = number of bytes in data_buff
-DATA_LENGTH = len(cell_voltages_info) * 2    # 1 value * 2 bytes = 2
-
-
-def rs485_checksum(byte_array):
-    return sum(byte_array) & 0xFFFF
-
 
 # ---------------------------
 # Helper: little-endian 16-bit
@@ -54,46 +26,25 @@ def decode_cell_voltages(payload):
         print(f"Cell {idx:02d}: {mV} mV  ({mV/1000:.3f} V)")
     print("================================\n")
 
+# ---------------------------
+# Main RS485 Frame Reader
+# ---------------------------
+def main():
+    ser = serial.Serial(
+        port="COM11",
+        baudrate=9600,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        timeout=0.2
+    )
 
-def build_cell_packet():
+    print("RS485 serial opened on COM11 @ 9600")
+    print("Reading incoming data...\n")
 
-    # create 2-byte uint16 data
-    data_buff = b"".join(struct.pack("<H", v) for v in cell_voltages_info)
+    buffer = bytearray()
 
-    # checksum buffer: status + data_length + data
-    checksum_buffer = bytes([
-        RS485_STATUS_OK,
-        DATA_LENGTH
-    ]) + data_buff
-
-    # calculate checksum (same as C)
-    chksum = rs485_checksum(checksum_buffer)
-
-    # checksum big-endian (revMemcpy in C)
-    checksum_be = struct.pack(">H", chksum)
-
-    # final packet
-    packet = bytes([
-        RS485_START_BYTE,
-        CELL_VOLTAGES_CMD,
-        RS485_STATUS_OK,
-        DATA_LENGTH
-    ]) + data_buff + checksum_be + bytes([RS485_END_BYTE])
-
-    return packet
-
-
-print("Sending RS485 data every 1 sec...")
-
-buffer = bytearray()
-
-try:
     while True:
-        pkt = build_cell_packet()
-        ser.write(pkt)
-        ser.flush()
-        print("TX:", pkt.hex().upper())
-
         chunk = ser.read(64)
         if chunk:
             buffer.extend(chunk)
@@ -122,10 +73,9 @@ try:
 
                 if cmd == 0x04:     # CELL_VOLTAGES_CMD
                     decode_cell_voltages(payload)
-        time.sleep(1)
 
-except KeyboardInterrupt:
-    print("Stopped.")
+        time.sleep(0.01)
 
-finally:
-    ser.close()
+
+if __name__ == "__main__":
+    main()
