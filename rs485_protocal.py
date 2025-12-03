@@ -1,7 +1,7 @@
 import serial
 import time
 import struct
-
+import binascii
 # =============================
 # RS485 CONFIG
 # =============================
@@ -129,6 +129,111 @@ def decode_basic_info(payload):
     print("================================\n")
 
 
+
+# ============================================================
+#   Helper for thresholds  (set, release, delay)
+# ============================================================
+def th(set_v, release_v, delay_v):
+    return struct.pack("<HHH", set_v, release_v, delay_v)
+
+
+# ============================================================
+#   Build Entire BMS Parameters Payload
+# ============================================================
+def build_full_payload():
+
+    payload = b""
+
+    # --------------------------------------------------------
+    # 1. BASIC PARAMETER CONFIG
+    # --------------------------------------------------------
+    payload += th(3655, 3500, 5)      # Cell_OV_P
+    payload += th(1000, 2500, 5)      # Cell_UV_P
+    payload += th(60000, 58000, 5)    # Pack_OV_P
+    payload += th(22000, 25000, 5)    # Pack_UV_P
+    payload += th(0, 5, 5)            # Chg_UT_P
+    payload += th(70, 45, 5)          # Dsg_OT_P
+    payload += th(75, 50, 3)          # Dsg_UT_P
+    payload += th(65, 55, 5)          # Chg_OT_P
+    payload += th(5000, 15, 5)        # Chg_OC_P
+    payload += th(10000, 30, 5)       # Dsg_OC_P
+
+    # --------------------------------------------------------
+    # 2. ADVANCED PROTECTION CONFIG
+    # --------------------------------------------------------
+    payload += th(20, 1280, 0)        # Dsg_OC2_P
+    payload += th(40, 400, 0)         # Short Circuit
+    payload += th(3900, 8, 0)         # H_Cell_OV
+    payload += th(2000, 16, 0)        # L_Cell_UV
+
+    # --------------------------------------------------------
+    # 3. FUNCTION CONFIG  (Load_EN..NTC4)
+    # --------------------------------------------------------
+    payload += struct.pack(
+        "<???????",
+        False,   # Load_EN
+        False,   # Balance_EN
+        False,   # CHG_Balance
+        False,   # NTC1
+        False,   # NTC2
+        False,   # NTC3
+        False    # NTC4
+    )
+
+    # --------------------------------------------------------
+    # 4. BALANCE CONFIG
+    # --------------------------------------------------------
+    payload += struct.pack("<HHH",
+                           3600,   # CellOpenVoltage
+                           50,     # BalanceDriftVoltage
+                           10)     # IPS_Off_Delay
+
+    # --------------------------------------------------------
+    # 5. SERIAL NUMBER BLOCK REMOVED
+    # --------------------------------------------------------
+    # Removed:
+    #   <BB16s>  (19 bytes removed)
+
+    # --------------------------------------------------------
+    # 6. CAPACITY CONFIG
+    # --------------------------------------------------------
+    payload += struct.pack(
+        "<IIHHB",
+        10000,   # NominalCapacity
+        8000,    # CycleCapacity
+        4150,    # FullSetVoltage
+        3000,    # EndOfVoltage
+        1        # SelfDischargeRate
+    )
+
+    return payload
+
+
+# ============================================================
+#   Build Frame = DD CMD STATUS LEN PAYLOAD CRC32 77
+# ============================================================
+def build_frame(payload):
+
+    CMD = 0x03
+    STATUS = 0x00
+    LENGTH = len(payload)
+
+    frame = bytearray()
+    frame.append(0xFD)
+    frame.append(CMD)
+    frame.append(STATUS)
+    frame.append(LENGTH)
+
+    frame += payload
+
+    # CRC32 over CMD + STATUS + LENGTH + PAYLOAD
+    crc = binascii.crc32(bytes([CMD, STATUS, LENGTH]) + payload) & 0xFFFFFFFF
+    frame += struct.pack("<I", crc)
+
+    frame.append(0x99)
+    return frame
+
+
 # =============================
 # RS485 Interface Class
 # =============================
@@ -222,6 +327,19 @@ def main():
                 if cmd == 0x05:     # <-- CHANGE IF NEEDED
                     decode_basic_info(payload)
 
+            time.sleep(2)
+    
+         
+            time.sleep(2)
+
+            payload = build_full_payload()
+            frame = build_frame(payload)
+
+            print(f"\nPayload Size = {len(payload)} bytes")
+            print("\n=== FULL RS485 CONFIG FRAME ===")
+            print(frame.hex(" ").upper(), "\n")
+            rs485.send_packet(frame)
+            print("Frame sent.")
             time.sleep(2)
 
     except KeyboardInterrupt:
