@@ -2,6 +2,7 @@ import serial
 import time
 import struct
 import binascii
+import csv
 
 
 # ============================================================
@@ -38,10 +39,15 @@ basic_info         = [0x0002]
 
 
 WRITE_BUTTON_CLICK  = 0
-READ_BUTTON_CLICK  = 1
+READ_BUTTON_CLICK  = 0
 
-CURRENT_AND_VOLT_CALIBRATE = 1
+CURRENT_AND_VOLT_CALIBRATE = 0
 calibrate_info = [0x10,0x20]
+
+GET_ALL_LOG = 1
+
+RS485_START_WRITE_LOG  = 0xDD
+RS485_END_WRITE_LOG   = 0x88
 
 # ============================================================
 #                  UTILITY FUNCTIONS
@@ -252,44 +258,7 @@ class RS485Interface:
     def close(self):
         self.ser.close()
 
-# class RS485Interface:
-#     def __init__(self, port, baud, timeout=1):
-#         self.ser = serial.Serial(port, baud, timeout=timeout)
-#         self.buffer = bytearray()
-
-#     def send(self, packet):
-#         self.ser.write(packet)
-#         self.ser.flush()
-#         print("TX:", packet.hex().upper())
-
-#     def read_frames(self):
-#         chunk = self.ser.read(64)
-#         if chunk:
-#             self.buffer.extend(chunk)
-
-#         frames = []
-
-#         while len(self.buffer) >= 6:
-#             if self.buffer[0] != 0xDD:
-#                 self.buffer.pop(0)
-#                 continue
-
-#             cmd = self.buffer[1]
-#             length = self.buffer[3]
-
-#             frame_len = 1 + 1 + 1 + 1 + length + 2 + 1
-#             if len(self.buffer) < frame_len:
-#                 break
-
-#             frame = self.buffer[:frame_len]
-#             del self.buffer[:frame_len]
-#             frames.append(frame)
-
-#         return frames
-
-#     def close(self):
-#         self.ser.close()
-
+ 
 
 # ==========================================================
 # 1) PARSE RAW RS485 FRAME
@@ -388,7 +357,184 @@ def decode_bms_config(data):
     ]
 
     return dict(zip(names, values))
+#######################################################################
+#logging
 
+START_BYTE  = 0x12
+CMD_BYTE    = 0x34
+STATUS_BYTE = 0x01
+
+PACKET_SIZE = 51
+CSV_FILE = "fix_time87.csv"
+
+
+# ---------------------------------------------------------
+# MOS State Decode
+# ---------------------------------------------------------
+def decode_mos_state(code: int) -> str:
+    return {
+        3: "ALL ON",
+        2: "CHG ON",
+        1: "DSG ON",
+        0: "ALL OFF"
+    }.get(code, "UNKNOWN")
+
+
+# ---------------------------------------------------------
+# FAULT BIT DEFINITIONS
+# ---------------------------------------------------------
+FAULT_MAP = {
+    1 << 0:  "OverVoltage",
+    1 << 1:  "UnderVoltage",
+    1 << 2:  "UnderPackVolt",
+    1 << 3:  "OverPackVolt",
+    1 << 4:  "OverCharge",
+    1 << 5:  "OverDischarge",
+    1 << 6:  "ThermalRunaway",
+    1 << 7:  "CellDiff",
+    1 << 8:  "OnBoard_UnderTemp",
+    1 << 9:  "OnBoard_OverTemp",
+    1 << 10: "Ext_OverTemp_Charge",
+    1 << 11: "Ext_OverTemp_Discharge",
+    1 << 12: "Balancing_OK",
+    1 << 13: "ShortCircuit",
+    1 << 14: "UnderTemp",
+    1 << 15: "HardwareFault"
+}
+
+def decode_faults(fault_word):
+    lst = [name for bit, name in FAULT_MAP.items() if fault_word & bit]
+    return lst if lst else ["No Fault"]
+
+
+# ---------------------------------------------------------
+# RTC TIME DECODE (Correct!)
+# raw_time  = 0xMMHHDDWW   (min, hour, day, week)
+# raw_time2 = 0xYYMM0000   (year, month)
+# ---------------------------------------------------------
+def decode_time(raw_time, raw_time2):
+    minute = (raw_time >> 24) & 0xFF
+    hour   = (raw_time >> 16) & 0xFF
+    day    = (raw_time >>  8) & 0xFF
+    week   = (raw_time >>  0) & 0xFF
+
+    month  = (raw_time2 >> 24) & 0xFF
+    year   = (raw_time2 >> 16) & 0xFF
+    year  += 2000
+
+    formatted = f"{day:02d}-{month:02d}-{year} {hour:02d}:{minute:02d}"
+
+    return formatted, {
+        "day": day,
+        "month": month,
+        "year": year,
+        "hour": hour,
+        "minute": minute,
+        "week": week
+    }
+
+
+# ---------------------------------------------------------
+# CSV Create Header
+# ---------------------------------------------------------
+def init_csv():
+    try:
+        with open(CSV_FILE, "x", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "No.",
+                "Time",
+                "Event Types",
+                "PackVol(V)",
+                "PackCur(A)",
+                "RmCap(Ah)",
+                "FCC(Ah)",
+                "MaxCellVol(V)",
+                "MaxCellNum",
+                "MinCellVol(V)",
+                "MinCellNum",
+                "MaxT(°C)",
+                "MinT(°C)",
+                "MOS State"
+            ])
+    except FileExistsError:
+        pass
+
+
+# ---------------------------------------------------------
+# CSV Logging
+# ---------------------------------------------------------
+def log_to_csv(data):
+    with open(CSV_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            data["tick"],
+            data["datetime"],
+            ", ".join(data["faultNames"]),
+            data["packVolt"],
+            data["packCurrent"],
+            data["RmCap"],
+            data["FcCap"],
+            data["maxCellVoltage"],
+            data["maxVoltage_cellno"],
+            data["minCellVoltage"],
+            data["minVoltage_cellno"],
+            data["maxTemp"],
+            data["minTemp"],
+            data["mosStateText"],
+        ])
+
+
+# ---------------------------------------------------------
+# RS485 Frame Decode
+# ---------------------------------------------------------
+def decode_rs485_frame(frame: bytes):
+
+    idx = 4  # Skip 0x12, 0x34, 0x01
+
+    def u8():
+        nonlocal idx
+        v = frame[idx]
+        idx += 1
+        return v
+
+    def u16():
+        nonlocal idx
+        v = int.from_bytes(frame[idx:idx+2], "little")
+        idx += 2
+        return v
+
+    def s16():
+        nonlocal idx
+        v = int.from_bytes(frame[idx:idx+2], "little", signed=True)
+        idx += 2
+        return v
+
+    def u32():
+        nonlocal idx
+        v = int.from_bytes(frame[idx:idx+4], "little")
+        idx += 4
+        return v
+
+    data = {}
+
+    data["tick"]               = u32()
+    data["time"]               = u32()
+    data["time2"]              = u32()
+    data["faults"]             = u16()
+    data["packVolt"]           = u16() / 1000.0
+    data["packCurrent"]        = s16() / 100.0
+    data["RmCap"]              = u8()
+    data["FcCap"]              = u8()
+    data["maxCellVoltage"]     = u16() / 1000.0
+    data["maxVoltage_cellno"]  = u8()
+    data["minCellVoltage"]     = u16() / 1000.0
+    data["minVoltage_cellno"]  = u8()
+    data["maxTemp"]            = s16() / 100.0
+    data["minTemp"]            = s16() / 100.0
+    data["mosFet"]             = u8()
+
+    return data
 
 
 
@@ -396,34 +542,38 @@ def decode_bms_config(data):
 #                      MAIN PROGRAM
 # ============================================================
 def main():
+    print("Reading RS485 data...\n")
+    init_csv()
+    print("Reading RS485 data...\n")
     rs = RS485Interface(PORT, BAUD, TIMEOUT)
 
     try:
         while True:
-            # -------- Send Cell Voltage Request --------
-            pkt = build_packet(RS485_START_CELL, CMD_CELL_VOLTAGES,
+
+            if GET_ALL_LOG == 0:
+                # -------- Send Cell Voltage Request --------
+                pkt = build_packet(RS485_START_CELL, CMD_CELL_VOLTAGES,
                                STATUS_OK, cell_voltages_info, RS485_END_CELL)
-            rs.send(pkt)
+                rs.send(pkt)
 
-            for frame in rs.read_frames():
-                cmd = frame[1]
-                payload = frame[4:4 + frame[3]]
-                if cmd == 0x04:
+                for frame in rs.read_frames():
+                   cmd = frame[1]
+                   payload = frame[4:4 + frame[3]]
+                   if cmd == 0x04:
                     decode_cell_voltages(payload)
+                time.sleep(1)
 
-            time.sleep(1)
-
-            # -------- Send Basic Info Request --------
-            pkt = build_packet(RS485_START_BASIC, CMD_BASIC_INFO,
+            if GET_ALL_LOG == 0:
+               # -------- Send Basic Info Request --------
+                pkt = build_packet(RS485_START_BASIC, CMD_BASIC_INFO,
                                STATUS_OK, basic_info, RS485_END_BASIC)
-            rs.send(pkt)
+                rs.send(pkt)
 
-            for frame in rs.read_frames():
-                cmd = frame[1]
-                payload = frame[4:4 + frame[3]]
-                if cmd == 0x05:
-                    decode_basic_info(payload)
-
+                for frame in rs.read_frames():
+                   cmd = frame[1]
+                   payload = frame[4:4 + frame[3]]
+                   if cmd == 0x05:
+                     decode_basic_info(payload)
             time.sleep(1)
 
             # -------- Send Full Config Write --------
@@ -460,6 +610,45 @@ def main():
                 pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_CAL)
                 rs.send(pkt) 
                 time.sleep(2) 
+            
+            if GET_ALL_LOG == 1:
+                pkt = build_packet(RS485_START_WRITE_LOG, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_LOG)
+                rs.send(pkt) 
+                time.sleep(2)
+                while True:
+                    b = rs.read(1)
+                    if not b:
+                        continue
+                    if b[0] != START_BYTE:
+                        continue
+                    header = rs.read(2)
+                    if len(header) != 2 or header[0] != CMD_BYTE or header[1] != STATUS_BYTE:
+                        continue
+                    rest = rs.read(PACKET_SIZE - 3)
+                    if len(rest) != (PACKET_SIZE - 3):
+                        print("Incomplete frame!")
+                        continue
+                    frame = b + header + rest
+                    parsed = decode_rs485_frame(frame)
+                    # Decode datetime
+                    parsed["datetime"], _ = decode_time(parsed["time"], parsed["time2"])
+                    parsed["mosStateText"] = decode_mos_state(parsed["mosFet"])
+                    parsed["faultNames"]   = decode_faults(parsed["faults"])
+
+                    # RAW PRINTS
+                    print("\n-------------------------------------")
+                    print(f"Decoded Time: {parsed['datetime']}")
+                    print(f"RAW time  = {parsed['time']}   (0x{parsed['time']:08X})")
+                    print(f"RAW time2 = {parsed['time2']}   (0x{parsed['time2']:08X})")
+                    print(f"Tick: {parsed['tick']}")
+                    print(f"Faults: {parsed['faultNames']}")
+                    print(f"Pack V: {parsed['packVolt']:.3f} V")
+                    print(f"Pack I: {parsed['packCurrent']:.2f} A")
+                    print(f"MOS State: {parsed['mosFet']} -> {parsed['mosStateText']}")
+                    # CSV log
+                    log_to_csv(parsed)
+                 
+
 
 
     except KeyboardInterrupt:
