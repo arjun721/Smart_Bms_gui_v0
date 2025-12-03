@@ -23,6 +23,9 @@ RS485_END_BASIC   = 0x66
 RS485_START_READ_PARAMETER   = 0x0FE
 RS485_END_READ_PARAMETER   = 0x98
 
+RS485_START_WRITE_CAL  = 0x0CC
+RS485_END_WRITE_CAL   = 0x77
+
 CMD_CELL_VOLTAGES = 0x01
 CMD_BASIC_INFO    = 0x02
 CMD_CONFIG_WRITE  = 0x03
@@ -36,6 +39,9 @@ basic_info         = [0x0002]
 
 WRITE_BUTTON_CLICK  = 0
 READ_BUTTON_CLICK  = 1
+
+CURRENT_AND_VOLT_CALIBRATE = 1
+calibrate_info = [0x10,0x20]
 
 # ============================================================
 #                  UTILITY FUNCTIONS
@@ -450,8 +456,11 @@ def main():
                     print(f"{k:<22} : {v}")
                 print("==============================================\n")
                 time.sleep(2)
+            if CURRENT_AND_VOLT_CALIBRATE == 1:
+                pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_CAL)
+                rs.send(pkt) 
+                time.sleep(2) 
 
-                
 
     except KeyboardInterrupt:
         print("Stopped by user.")
