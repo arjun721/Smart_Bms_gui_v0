@@ -164,7 +164,7 @@ def build_full_payload():
     p = b""
 
     # 1. Basic thresholds
-    p += pack_threshold(3655, 3500, 5)
+    p += pack_threshold(3657, 3500, 5)
     p += pack_threshold(1000, 2500, 5)
     p += pack_threshold(60000, 58000, 5)
     p += pack_threshold(22000, 25000, 5)
@@ -546,10 +546,14 @@ def main():
     init_csv()
     print("Reading RS485 data...\n")
     rs = RS485Interface(PORT, BAUD, TIMEOUT)
-    cmd = int(input("command: "))
+
     try:
         while True:
-            if cmd == 9:
+            
+            cmdx = int(input("command: "))
+            
+            
+            if cmdx == 9:
                 # -------- Send Cell Voltage Request --------
                 pkt = build_packet(RS485_START_CELL, CMD_CELL_VOLTAGES,
                                STATUS_OK, cell_voltages_info, RS485_END_CELL)
@@ -561,9 +565,9 @@ def main():
                    if cmd == 0x04:
                     decode_cell_voltages(payload)
                 time.sleep(1)
-                cmd = 9
+ 
 
-            if cmd == 9:
+            if cmdx == 9:
                # -------- Send Basic Info Request --------
                 pkt = build_packet(RS485_START_BASIC, CMD_BASIC_INFO,
                                STATUS_OK, basic_info, RS485_END_BASIC)
@@ -575,11 +579,10 @@ def main():
                    if cmd == 0x05:
                      decode_basic_info(payload)
             time.sleep(1)
-            cmd = 9
-            print(cmd)
+            print(cmdx)
 
             # -------- Send Full Config Write --------
-            if cmd == 5:
+            if cmdx == 5:
                 payload = build_full_payload()
                 frame = build_config_frame(payload)
                 print("\n=== SENDING FULL CONFIG FRAME ===")
@@ -588,7 +591,7 @@ def main():
                 time.sleep(2)
             
              # -------- Send Basic Info Request --------
-            if cmd == 6:
+            if cmdx == 6:
                 pkt = build_packet(RS485_START_READ_PARAMETER, CMD_BASIC_INFO,STATUS_OK, basic_info, RS485_END_READ_PARAMETER)
                 rs.send(pkt) 
                 time.sleep(2) 
@@ -615,7 +618,7 @@ def main():
                 rs.send(pkt) 
                 time.sleep(2) 
             
-            if cmd == 1:
+            if cmdx == 1:
                 pkt = build_packet(RS485_START_WRITE_LOG, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_LOG)
                 rs.send(pkt) 
                 time.sleep(2)
@@ -631,7 +634,7 @@ def main():
                     rest = rs.read(PACKET_SIZE - 3)
                     if len(rest) != (PACKET_SIZE - 3):
                         print("cmd = 0!")
-                        cmd = 0
+                        cmdx = 0
                         break
                     frame = b + header + rest
                     parsed = decode_rs485_frame(frame)
