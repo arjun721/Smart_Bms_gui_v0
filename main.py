@@ -609,11 +609,10 @@ def main():
                 print("\n========== DECODED BMS CONFIG DATA ==========")
                 for k, v in cfg.items():
                     print(f"{k:<22} : {v}")
-                cmd = 0    
                 print("cmd = 0 ==============================================\n")
                 time.sleep(2)
 
-            if CURRENT_AND_VOLT_CALIBRATE == 1:
+            if cmdx == 3:
                 pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_CAL)
                 rs.send(pkt) 
                 time.sleep(2) 
