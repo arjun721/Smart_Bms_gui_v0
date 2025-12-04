@@ -546,11 +546,10 @@ def main():
     init_csv()
     print("Reading RS485 data...\n")
     rs = RS485Interface(PORT, BAUD, TIMEOUT)
-
+    cmd = int(input("command: "))
     try:
         while True:
-
-            if GET_ALL_LOG == 0:
+            if cmd == 9:
                 # -------- Send Cell Voltage Request --------
                 pkt = build_packet(RS485_START_CELL, CMD_CELL_VOLTAGES,
                                STATUS_OK, cell_voltages_info, RS485_END_CELL)
@@ -562,8 +561,9 @@ def main():
                    if cmd == 0x04:
                     decode_cell_voltages(payload)
                 time.sleep(1)
+                cmd = 9
 
-            if GET_ALL_LOG == 0:
+            if cmd == 9:
                # -------- Send Basic Info Request --------
                 pkt = build_packet(RS485_START_BASIC, CMD_BASIC_INFO,
                                STATUS_OK, basic_info, RS485_END_BASIC)
@@ -575,9 +575,11 @@ def main():
                    if cmd == 0x05:
                      decode_basic_info(payload)
             time.sleep(1)
+            cmd = 9
+            print(cmd)
 
             # -------- Send Full Config Write --------
-            if WRITE_BUTTON_CLICK == 1:
+            if cmd == 5:
                 payload = build_full_payload()
                 frame = build_config_frame(payload)
                 print("\n=== SENDING FULL CONFIG FRAME ===")
@@ -586,7 +588,7 @@ def main():
                 time.sleep(2)
             
              # -------- Send Basic Info Request --------
-            if READ_BUTTON_CLICK == 1:
+            if cmd == 6:
                 pkt = build_packet(RS485_START_READ_PARAMETER, CMD_BASIC_INFO,STATUS_OK, basic_info, RS485_END_READ_PARAMETER)
                 rs.send(pkt) 
                 time.sleep(2) 
@@ -604,14 +606,16 @@ def main():
                 print("\n========== DECODED BMS CONFIG DATA ==========")
                 for k, v in cfg.items():
                     print(f"{k:<22} : {v}")
-                print("==============================================\n")
+                cmd = 0    
+                print("cmd = 0 ==============================================\n")
                 time.sleep(2)
+
             if CURRENT_AND_VOLT_CALIBRATE == 1:
                 pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_CAL)
                 rs.send(pkt) 
                 time.sleep(2) 
             
-            if GET_ALL_LOG == 1:
+            if cmd == 1:
                 pkt = build_packet(RS485_START_WRITE_LOG, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_LOG)
                 rs.send(pkt) 
                 time.sleep(2)
@@ -626,8 +630,9 @@ def main():
                         continue
                     rest = rs.read(PACKET_SIZE - 3)
                     if len(rest) != (PACKET_SIZE - 3):
-                        print("Incomplete frame!")
-                        continue
+                        print("cmd = 0!")
+                        cmd = 0
+                        break
                     frame = b + header + rest
                     parsed = decode_rs485_frame(frame)
                     # Decode datetime
