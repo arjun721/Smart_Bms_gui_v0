@@ -4,18 +4,10 @@ import struct
 import binascii
 import csv
 
-
-# ============================================================
-#                     RS485 CONFIG
-# ============================================================
-PORT    = "COM7"
+PORT    = "COM4"
 BAUD    = 9600
 TIMEOUT = 1
 
-
-# ============================================================
-#                     CONSTANTS
-# ============================================================
 RS485_START_CELL  = 0xAA
 RS485_END_CELL    = 0x55
 
@@ -43,15 +35,12 @@ READ_BUTTON_CLICK  = 0
 
 CURRENT_AND_VOLT_CALIBRATE = 0
 calibrate_info = [0x10,0x20]
+calibrate_info_1 = [21,0x20]
 
 GET_ALL_LOG = 1
 
 RS485_START_WRITE_LOG  = 0xDD
 RS485_END_WRITE_LOG   = 0x88
-
-# ============================================================
-#                  UTILITY FUNCTIONS
-# ============================================================
 def rs485_checksum(data: bytes) -> int:
     """16-bit checksum"""
     return sum(data) & 0xFFFF
@@ -67,9 +56,6 @@ def pack_threshold(set_v, release_v, delay_v):
     return struct.pack("<HHH", set_v, release_v, delay_v)
 
 
-# ============================================================
-#                GENERIC PACKET BUILDER
-# ============================================================
 def build_packet(start_byte, cmd, status, data_list, end_byte) -> bytes:
     data_buff = b"".join(struct.pack("<H", v) for v in data_list)
     data_length = len(data_buff)
@@ -86,10 +72,6 @@ def build_packet(start_byte, cmd, status, data_list, end_byte) -> bytes:
     )
     return packet
 
-
-# ============================================================
-#                BASIC INFORMATION DECODER
-# ============================================================
 def decode_cell_voltages(payload: bytes):
     if len(payload) != 32:
         print(f"❌ Invalid cell payload length: {len(payload)}")
@@ -157,46 +139,40 @@ def decode_basic_info(payload: bytes):
     print("=======================\n")
 
 
-# ============================================================
-#        BUILD FULL CONFIG PAYLOAD FOR WRITE CONFIG
-# ============================================================
 def build_full_payload():
     p = b""
 
     # 1. Basic thresholds
-    p += pack_threshold(3657, 3500, 5)
-    p += pack_threshold(1000, 2500, 5)
-    p += pack_threshold(60000, 58000, 5)
-    p += pack_threshold(22000, 25000, 5)
-    p += pack_threshold(0, 5, 5)
-    p += pack_threshold(70, 45, 5)
-    p += pack_threshold(75, 50, 3)
-    p += pack_threshold(65, 55, 5)
-    p += pack_threshold(5000, 15, 5)
-    p += pack_threshold(10000, 30, 5)
+    p += pack_threshold(3657, 3500, 5) #charge_ov_c
+    p += pack_threshold(1000, 2500, 5) #charge_uv_c
+    p += pack_threshold(60000, 58000, 5) #pack_ov_c
+    p += pack_threshold(22000, 25000, 5) #pack_uv_c
+    p += pack_threshold(1, 4, 4) #charge_ut
+    p += pack_threshold(71, 45, 5)#discharge_ot
+    p += pack_threshold(10, 10, 10) #discharge_ut
+    p += pack_threshold(66, 56, 6) #charge_ot
+    p += pack_threshold(5001, 11, 8) #charge_oc
+    p += pack_threshold(10001, 31, 7) #dis_oc
 
     # 2. Advanced protection
-    p += pack_threshold(20, 1280, 0)
-    p += pack_threshold(40, 400, 0)
-    p += pack_threshold(3900, 8, 0)
-    p += pack_threshold(2000, 16, 0)
+    p += pack_threshold(21, 1281, 1)
+    p += pack_threshold(41, 401, 1)
+    p += pack_threshold(3901, 1, 1)
+    p += pack_threshold(3000, 15, 1)
 
     # 3. Function config
-    p += struct.pack("<???????", 0, 0, 0, 0, 0, 0, 0)
+    p += struct.pack("<???????", 1, 1, 1, 1, 1, 1, 1)
 
     # 4. Balancing
-    p += struct.pack("<HHH", 3600, 50, 10)
+    p += struct.pack("<HHH", 3601, 51, 11)
 
     # 6. Capacity config
     p += struct.pack("<IIHHB",
-                     10000, 8000, 4150, 3000, 1)
+                     10500, 8000, 2150, 2000, 2)
 
     return p
 
 
-# ============================================================
-#               BUILD FINAL CONFIG FRAME
-# ============================================================
 def build_config_frame(payload):
     CMD     = CMD_CONFIG_WRITE
     STATUS  = 0x00
@@ -210,11 +186,6 @@ def build_config_frame(payload):
     frame.append(0x99)
 
     return frame
-
-
-# ============================================================
-#              RS485 INTERFACE CLASS
-# ============================================================
 
 class RS485Interface:
     def __init__(self, port, baud, timeout=1):
@@ -258,11 +229,6 @@ class RS485Interface:
     def close(self):
         self.ser.close()
 
- 
-
-# ==========================================================
-# 1) PARSE RAW RS485 FRAME
-# ==========================================================
 def parse_rs485_frame(frame):
 
     if len(frame) < 8:  # minimum usable frame
@@ -300,25 +266,22 @@ def parse_rs485_frame(frame):
         "checksum": checksum
     }, None
 
-
-
-# ==========================================================
-# 2) DECODE BmsConfig_struct (Matches Your C Struct)
-# ==========================================================
 def decode_bms_config(data):
 
     fmt = "<" + \
-          "H"*27 + \
+          "H"*30 + \
           "H"*12 + \
           "B"*7 + \
           "H"*3 + \
           "I"*2 + \
           "H"*2 + \
           "B"
+    print(fmt)
 
     try:
         values = struct.unpack(fmt, data)
     except struct.error:
+        print(struct.error)
         return {"ERROR": "Data size mismatch for BMS config struct"}
 
     names = [
@@ -328,6 +291,9 @@ def decode_bms_config(data):
         "Pack_OV_set","Pack_OV_rel","Pack_OV_delay",
         "Pack_UV_set","Pack_UV_rel","Pack_UV_delay",
         "Chg_UT_set","Chg_UT_rel","Chg_UT_delay",
+        "Dsg_UT_set","Dsg_UT_rel","Dsg_UT_delay",
+
+
         "Dsg_OT_set","Dsg_OT_rel","Dsg_OT_delay",
         "Chg_OT_set","Chg_OT_rel","Chg_OT_delay",
         "Chg_OC_set","Chg_OC_rel","Chg_OC_delay",
@@ -368,9 +334,6 @@ PACKET_SIZE = 51
 CSV_FILE = "fix_time87.csv"
 
 
-# ---------------------------------------------------------
-# MOS State Decode
-# ---------------------------------------------------------
 def decode_mos_state(code: int) -> str:
     return {
         3: "ALL ON",
@@ -380,9 +343,6 @@ def decode_mos_state(code: int) -> str:
     }.get(code, "UNKNOWN")
 
 
-# ---------------------------------------------------------
-# FAULT BIT DEFINITIONS
-# ---------------------------------------------------------
 FAULT_MAP = {
     1 << 0:  "OverVoltage",
     1 << 1:  "UnderVoltage",
@@ -407,11 +367,6 @@ def decode_faults(fault_word):
     return lst if lst else ["No Fault"]
 
 
-# ---------------------------------------------------------
-# RTC TIME DECODE (Correct!)
-# raw_time  = 0xMMHHDDWW   (min, hour, day, week)
-# raw_time2 = 0xYYMM0000   (year, month)
-# ---------------------------------------------------------
 def decode_time(raw_time, raw_time2):
     minute = (raw_time >> 24) & 0xFF
     hour   = (raw_time >> 16) & 0xFF
@@ -434,9 +389,6 @@ def decode_time(raw_time, raw_time2):
     }
 
 
-# ---------------------------------------------------------
-# CSV Create Header
-# ---------------------------------------------------------
 def init_csv():
     try:
         with open(CSV_FILE, "x", newline="") as f:
@@ -461,9 +413,6 @@ def init_csv():
         pass
 
 
-# ---------------------------------------------------------
-# CSV Logging
-# ---------------------------------------------------------
 def log_to_csv(data):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
@@ -484,10 +433,6 @@ def log_to_csv(data):
             data["mosStateText"],
         ])
 
-
-# ---------------------------------------------------------
-# RS485 Frame Decode
-# ---------------------------------------------------------
 def decode_rs485_frame(frame: bytes):
 
     idx = 4  # Skip 0x12, 0x34, 0x01
@@ -537,10 +482,6 @@ def decode_rs485_frame(frame: bytes):
     return data
 
 
-
-# ============================================================
-#                      MAIN PROGRAM
-# ============================================================
 def main():
     print("Reading RS485 data...\n")
     init_csv()
@@ -613,8 +554,8 @@ def main():
                 print("cmd = 0 ==============================================\n")
                 time.sleep(2)
 
-            if CURRENT_AND_VOLT_CALIBRATE == 1:
-                pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info, RS485_END_WRITE_CAL)
+            if cmdx == 3:
+                pkt = build_packet(RS485_START_WRITE_CAL, CMD_BASIC_INFO,STATUS_OK, calibrate_info_1, RS485_END_WRITE_CAL)
                 rs.send(pkt) 
                 time.sleep(2) 
             
@@ -665,9 +606,11 @@ def main():
     finally:
         rs.close()
 
-
-# ============================================================
-#                       ENTRY POINT
-# ============================================================
 if __name__ == "__main__":
     main()
+
+
+#make this 4 apis in flask . allow cors for 3000 call. 5-write 6-read 9-packinfo 1-log. res in json. and 
+#in logs we need two things first sending to ui (json) and making csv as well. 
+#here api get request like http://localhost:3000/5 then write 5 command as like we need to make 4 apis
+#dont make more than one file everything should in this one file dont make other file.
